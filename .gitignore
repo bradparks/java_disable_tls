@@ -1,0 +1,7 @@
+java_sample/
+php/
+tech
+*.class
+test_all.sh
+node_modules
+log.txt

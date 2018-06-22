@@ -1,0 +1,2 @@
+Team,Domain,TLS 1.0 Supported,TLS 1.1 Supported,TLS 1.2 Supported,Comments,Skip
+Sanity Check,tls1test.salesforce.com,N,Y,Y,,

@@ -1,0 +1,204 @@
+#!/usr/bin/env node
+
+var fs = require('fs');
+var parse = require('csv-parse');
+var async = require('async');
+var csv = require('csv');
+var exec = require('child_process').exec;
+var defaults = {
+  batchSize: 10,
+  delimiter: ',',
+  inputFile: 'tls_data.csv',
+  limit: 1000,
+  testTlsTimeout: 20,
+  cmd: 'other',
+  timeout: 10 * 1000,
+  verbose: false,
+  onlyDiffs: false
+};
+
+var options = require('yargs')
+    .default(defaults)
+    .usage('Usage: $0 [options] - checks entries in a csv file for TLS support')
+    .example('./$0',            'Process csv file tls_data.csv and output differences')
+    .example('./$0 -d',         'Only show entries that have changed')
+    .example('./$0 -i /tmp/now2.csv --cmd=other', 'Use input file /tmp/now.csv, and test using simple shell script')
+    .help('h')
+    .describe('batchSize',      'How many tests to run concurrently')
+    .describe('delimiter',      'What delimits entries in your csv file?')
+    .describe('inputFile',      'The csv file to process')
+    .describe('outputFile',     'Where to save the new csv file to. defaults to stdout')
+    .describe('limit',          'The max # to process. Lets you test it faster!')
+    .describe('testTlsTimeout', 'How long to wait before timing out a tls_test_request, in sec')
+    .describe('timeout',        'Overall timeout value for spawning processes, in ms')
+    .describe('onlyDiffs',      'Only output csv entries that have changed from the input file?')
+    .describe('cmd',            'Which cmd to use, tls_test/tls_test.sh or other/tls_test_server')
+    .describe('verbose',        'Show lots of detail on the commands that are being run')
+    .alias('c', 'cmd')
+    .alias('d', 'onlyDiffs')
+    .alias('h', 'help')
+    .alias('i', 'inputFile')
+    .alias('l', 'limit')
+    .alias('o', 'outputFile')
+    .alias('t', 'timeout')
+    .alias('v', 'verbose')
+    .argv;
+
+function out(a1){
+  if (a1 === undefined)
+    a1 = '';
+  console.log(a1);
+}
+
+function verbose(a1, wantsNewLine){
+  if (! options.verbose)
+    return;
+
+  out(a1);
+
+  if (wantsNewLine)
+    out("");
+}
+
+function die(msg) {
+  console.log(msg);
+  process.exit();
+}
+
+// Make sure we got a filename on the command line.
+verbose("Running with options:" + JSON.stringify(options), true);
+
+// Make sure we have an existing csv file to process
+if (! fs.existsSync(options.inputFile)){
+  die('Input file doesnt exist!, ' + options.inputFile);
+}
+
+function supportsTls(data, tlsVersion) {
+  var tls = "TLS " + tlsVersion + " ";
+  var result = false;
+
+  for (var i in data) {
+    var line = data[i];
+    if (line.indexOf(tls) != -1) {
+      line = "" + line.toLowerCase();
+      var result = (line.indexOf("not supported") == -1);
+      break;
+    }
+  }
+
+  return result ? 'Y' : 'N';
+}
+
+function failIf(err) {
+  if ((err === null) || (err === undefined))
+    return;
+
+  console.error(err);
+  process.exit();
+}
+
+// Get the csv file as a string 
+var records = fs.readFileSync(options.inputFile, 'utf8');
+
+out('Tests started. Waiting for results');
+
+// Parse the csv file, line by line
+parse(records, {delimiter: options.delimiter}, function(err, data){
+  failIf(err);
+
+  var csvHeader = data.slice(0, 1)[0];
+  var newData = [];
+  var numProcessed = 0;
+
+  data = data.slice(1, options.limit+1);
+
+  // Run test_tls.sh for each entry in the csv file asynchronously
+  async.eachOfLimit(data, options.batchSize,
+    function (rec, index, goNext) {
+      var r = {
+        team: rec[0],
+        domain: rec[1],
+        tls10: rec[2],
+        tls11: rec[3],
+        tls12: rec[4],
+        comments: rec[5],
+        shouldSkip: rec[6]
+      }
+
+      if (r.shouldSkip == "Y")
+      {
+        numProcessed++;
+        out(numProcessed + ' of ' + (data.length) + ': ' + r.domain + ', SKIPPED');
+        newData.push([r.team,r.domain,r.tls10,r.tls11,r.tls12,r.comments,r.shouldSkip]);
+        goNext();
+        return;
+      }
+
+
+      var cmd1 = "../other/tls_test_server '" + r.domain + "' " + options.timeout + " '/tmp/__dump_tls/" + r.domain + "'";
+      var cmd2 = "../test_tls/test_tls.sh '" + r.domain + "' 'https' '" + options.testTlsTimeout + "' '/tmp/__dump_tls/" + r.domain + "'";
+      var cmd = (options.cmd == "other") ? cmd1 : cmd2;
+      verbose(cmd);
+
+      var execOptions = {timeout: options.timeout};
+
+      exec(cmd, execOptions, function(err,stdout,stderr){
+        var cmdData = stdout.split("\n");
+        var r2 = {
+          team: rec[0],
+          domain: rec[1],
+          tls10: supportsTls(cmdData, "1"),
+          tls11: supportsTls(cmdData, "1.1"),
+          tls12: supportsTls(cmdData, "1.2"),
+          comments: rec[5],
+          shouldSkip: rec[6]
+        }
+
+        // Compare the csv values from before, with the new results
+        var areEqual = (JSON.stringify(r) == JSON.stringify(r2));
+        var shouldIncludeItem = (! err) 
+        shouldIncludeItem &= (options.onlyDiffs && ! areEqual) || (! options.onlyDiffs);
+
+        if (err) {
+          out('Failure -> ' + (numProcessed+1) + ' of ' + (data.length) + ': ' + r.domain + ', FAILED TO CONTACT SERVER');
+        }
+
+        numProcessed++;
+
+        if (shouldIncludeItem){
+          var info = areEqual ? '' : ", info:" + [r.tls10, r.tls11, r.tls12, 'vs' ,r2.tls10, r2.tls11, r2.tls12];
+          out(numProcessed + ' of ' + (data.length) + ': ' + r.domain + ', changed:' + ! areEqual + info);
+          newData.push([r2.team,r2.domain,r2.tls10,r2.tls11,r2.tls12,r2.comments,r2.shouldSkip]);
+        }
+
+        goNext();
+      });
+    },
+    function (err) {
+      failIf(err);
+
+      if ((newData.length <= 1) && options.onlyDiffs)
+        die("No changes found!");
+
+      newData.sort();
+      newData.unshift(csvHeader);
+
+      // Dump csv results to command line
+      csv.stringify(newData, function(err, data){
+        failIf(err);
+
+        if (options.outputFile) {
+          fs.writeFileSync(options.outputFile, data);
+          fs.writeFile(options.outputFile, data, function (err) {
+            if (err) throw err;
+            out('Saved csv data to file:' + options.outputFile);
+          });
+        }
+        else {
+          out();
+          out(data);
+        }
+      });
+    }
+  );
+});

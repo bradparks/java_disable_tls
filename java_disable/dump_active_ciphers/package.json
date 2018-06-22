@@ -1,0 +1,14 @@
+{
+  "name": "dump_active_ciphers",
+  "version": "1.0.0",
+  "description": "- This simple sample shows the ciphers that are currently available to Java, and whether or not they're enabled or disabled. - This can be used in conjunction with making changes to the `java.security` file's `jdk.tls.disabledAlgorithms` config entry. - We'll use this to verify that ciphers that should be disabled have actually been disabled. - The java sample was [snagged from here](https://confluence.atlassian.com/stashkb/list-ciphers-used-by-jvm-679609085.html) and slightly modified.",
+  "main": "verify_results.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "alasql": "^0.4.6"
+  }
+}
